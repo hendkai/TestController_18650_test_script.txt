@@ -1,0 +1,81 @@
+=var load = getDevice("Load")
+="Loaddevice = " + load
+;; Loaddevice = ATDL24P
+
+=var testCurrent = 1.0
+=var minVoltage = 2.5
+=var stepTime = 10
+=var maxTestTime = 150
+=var capacity = 0
+
+#popupInit "18650 Battery Test - Settings"
+#popupNumber "Discharge Current (A)" testCurrent 0.1 2.0 "Recommended: 0.5C of nominal capacity"
+#popupNumber "Minimum Voltage (V)" minVoltage 2.5 3.0 "Safety cutoff voltage"
+#popupNumber "Measurement Interval (Sec)" stepTime 5 30 "More frequent = more accurate data"
+#popupNumber "Maximum Test Time (Min)" maxTestTime 30 240 "Safety time limit"
+#popupButtons Start ok Abort
+#popupShow
+
+#if !ok
+="Test aborted"
+#return
+#endif
+
+=var startVoltage = readVoltage(load)
+#if (startVoltage < 4.1)
+="ERROR: Battery voltage too low (" + startVoltage + "V)"
+="The battery must be charged to at least 4.1 V before starting the test"
+="Test aborted"
+#return
+#endif
+
+="Starting test..."
+=setOn(load, 0)
+#delay 0.5
+=setVoltage(load, minVoltage)
+#delay 0.5
+=setCurrent(load, testCurrent)
+#delay 0.5
+="Start voltage: " + startVoltage + " V"
+#log 1
+#ChartCurves (load + ".Voltage") (load + ".Current")
+=setOn(load, 1)
+="Test running with " + testCurrent + " A"
+
+=var maxTestTimeSeconds = (maxTestTime * 60)
+=var elapsedTime = 0
+
+#while ((readVoltage(load) > minVoltage) && (elapsedTime < maxTestTimeSeconds))
+    =var current = readCurrent(load)
+    if (current != null && current != undefined) {
+        =capacity = capacity + (current * (stepTime / 3600))
+    } else {
+        #debug "ERROR: Current read from device is null or undefined"
+        break
+    }
+    #delay stepTime
+    =elapsedTime = elapsedTime + stepTime
+#endwhile
+
+=reset(load)
+=setCurrent(load, 0)
+=setOn(load, 0)
+#log 0
+="Test completed"
+
+if (capacity > 0) {
+    ="Discharged capacity: " + formatSI((capacity * 1000), 1) + " mAh"
+} else {
+    ="ERROR: Discharged capacity is zero or negative"
+}
+
+="End voltage: " + readVoltage(load) + " V"
+="Test duration: " + formatSI((elapsedTime / 60), 1) + " minutes"
+
+if (internalResistance > 0) {
+    ="Internal Resistance: " + formatSI(internalResistance * 1000, 3) + " mOhm"
+} else {
+    ="ERROR: Internal resistance is zero or negative"
+}
+
+#debug "Current read from device: " current
