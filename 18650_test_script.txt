@@ -8,11 +8,10 @@
 =var fastMeasureTime = 1     // 1 second for first 5 minutes
 =var normalStepTime = 10     // 10 seconds for the remainder
 =var initialPeriod = 300     // 5 minutes in seconds
-=var maxTestTime = 150
+=var maxTestTime = 300     // Erhöht auf 5 Stunden (300 Minuten)
 =var capacity = 0
 =var internalResistance = 0
 =var temperature = 0
-=var startTime = getCurrentTime()
 =var defaultMaxTemp = 50     // Default maximum safe temperature
 =var defaultMinTemp = 15     // Default minimum safe temperature
 
@@ -20,7 +19,7 @@
 #popupNumber "Discharge Current (A)" defaultTestCurrent 0.1 2.0 "Recommended: 0.5C-1C of nominal capacity"
 #popupNumber "Minimum Voltage (V)" defaultMinVoltage 2.5 3.0 "Safety cutoff voltage (2.5V recommended)"
 #popupNumber "Start Voltage (V)" defaultStartVoltage 3.5 4.2 0.1 "Minimum required start voltage"
-#popupNumber "Maximum Test Time (Min)" maxTestTime 30 240 "Set according to capacity"
+#popupNumber "Maximum Test Time (Min)" maxTestTime 30 360 "Set according to capacity"
 #popupNumber "Maximum Temperature (°C)" defaultMaxTemp 45 60 "Upper safety temperature limit (Default: " + defaultMaxTemp + "°C)"
 #popupNumber "Minimum Temperature (°C)" defaultMinTemp 10 25 "Lower temperature limit (Default: " + defaultMinTemp + "°C)"
 #popupButtons Start ok Abort
@@ -53,8 +52,14 @@
 =setCurrent(load, testCurrent)
 #delay 0.5
 ="Start voltage: " + startVoltage + " V"
+
+// Logging-Konfiguration in korrekter Reihenfolge
+#logTime 1
 #log 1
+#logClear
+#logStart "Time,Voltage,Current,Capacity"
 #ChartCurves (load + ".Voltage") (load + ".Current")
+
 =setOn(load, 1)
 ="Test running with " + testCurrent + " A"
 
@@ -64,47 +69,33 @@
 #while ((readVoltage(load) > minVoltage) && (elapsedTime < maxTestTimeSeconds))
     =var current = readCurrent(load)
     =var voltage = readVoltage(load)
-    =temperature = readTemperature(load)
     
-    // Temperature safety checks
-    #if (temperature > maxTemp)
-        ="WARNING: Upper temperature limit reached: " + temperature + "°C"
-        break
-    #endif
+    ="DEBUG: Current time: " + (elapsedTime/60) + " minutes"
+    ="DEBUG: Voltage: " + voltage + "V"
+    ="DEBUG: Current: " + current + "A"
     
-    #if (temperature < minTemp)
-        ="WARNING: Lower temperature limit reached: " + temperature + "°C"
-        break
-    #endif
+    =capacity = capacity + (current * (1 / 3600))
+    #logData (elapsedTime/60) voltage current capacity
     
-    // Dynamic measurement interval
-    =var currentStepTime = (elapsedTime < initialPeriod) ? fastMeasureTime : normalStepTime
-    
-    if (current > 0) {
-        =internalResistance = (startVoltage - voltage) / current
-    }
-    
-    if (current != null && current != undefined) {
-        =capacity = capacity + (current * (currentStepTime / 3600))
-        #log "Time,Voltage,Current,Temperature,Capacity" (elapsedTime/60) voltage current temperature capacity
-    }
-    
-    #delay currentStepTime
-    =elapsedTime = elapsedTime + currentStepTime
+    #delay 1
+    =elapsedTime = elapsedTime + 1
 #endwhile
 
-=reset(load)
+#log 0  // Logging am Ende deaktivieren
+
 =setCurrent(load, 0)
+=setVoltage(load, 0)
 =setOn(load, 0)
-#log 0
+
 ="Test completed"
+="Reason for completion: "
+#if elapsedTime >= maxTestTimeSeconds
+    ="Maximum test time reached"
+#elif readVoltage(load) <= minVoltage
+    ="Minimum voltage reached"
+#endif
 
-if (capacity > 0) {
-    ="Discharged capacity: " + formatSI((capacity * 1000), 1) + " mAh"
-} else {
-    ="ERROR: Discharged capacity is zero or negative"
-}
-
+="Discharged capacity: " + formatSI((capacity * 1000), 1) + " mAh"
 ="End voltage: " + readVoltage(load) + " V"
 ="Test duration: " + formatSI((elapsedTime / 60), 1) + " minutes"
 
