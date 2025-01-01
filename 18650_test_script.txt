@@ -1,20 +1,36 @@
 =var load = getDevice("Load")
-="Loaddevice = " + load
-;; Loaddevice = ATDL24P
+="Load device = " + load
 
-=var testCurrent = 1.0
-=var minVoltage = 2.5
-=var stepTime = 10
+// Basic test parameters
+=var defaultTestCurrent = 1.0
+=var defaultMinVoltage = 2.5
+=var defaultStartVoltage = 3.7      // Default minimum start voltage
+=var fastMeasureTime = 1     // 1 second for first 5 minutes
+=var normalStepTime = 10     // 10 seconds for the remainder
+=var initialPeriod = 300     // 5 minutes in seconds
 =var maxTestTime = 150
 =var capacity = 0
+=var internalResistance = 0
+=var temperature = 0
+=var startTime = getCurrentTime()
+=var defaultMaxTemp = 50     // Default maximum safe temperature
+=var defaultMinTemp = 15     // Default minimum safe temperature
 
-#popupInit "18650 Battery Test - Settings"
-#popupNumber "Discharge Current (A)" testCurrent 0.1 2.0 "Recommended: 0.5C of nominal capacity"
-#popupNumber "Minimum Voltage (V)" minVoltage 2.5 3.0 "Safety cutoff voltage"
-#popupNumber "Measurement Interval (Sec)" stepTime 5 30 "More frequent = more accurate data"
-#popupNumber "Maximum Test Time (Min)" maxTestTime 30 240 "Safety time limit"
+#popupInit "18650 Battery Test - Enhanced Settings"
+#popupNumber "Discharge Current (A)" defaultTestCurrent 0.1 2.0 "Recommended: 0.5C-1C of nominal capacity"
+#popupNumber "Minimum Voltage (V)" defaultMinVoltage 2.5 3.0 "Safety cutoff voltage (2.5V recommended)"
+#popupNumber "Start Voltage (V)" defaultStartVoltage 3.5 4.2 0.1 "Minimum required start voltage"
+#popupNumber "Maximum Test Time (Min)" maxTestTime 30 240 "Set according to capacity"
+#popupNumber "Maximum Temperature (°C)" defaultMaxTemp 45 60 "Upper safety temperature limit (Default: " + defaultMaxTemp + "°C)"
+#popupNumber "Minimum Temperature (°C)" defaultMinTemp 10 25 "Lower temperature limit (Default: " + defaultMinTemp + "°C)"
 #popupButtons Start ok Abort
 #popupShow
+
+// Store selected values into working variables after popup
+=var testCurrent = defaultTestCurrent
+=var minVoltage = defaultMinVoltage
+=var maxTemp = defaultMaxTemp
+=var minTemp = defaultMinTemp
 
 #if !ok
 ="Test aborted"
@@ -22,11 +38,11 @@
 #endif
 
 =var startVoltage = readVoltage(load)
-#if (startVoltage < 4.1)
-="ERROR: Battery voltage too low (" + startVoltage + "V)"
-="The battery must be charged to at least 4.1 V before starting the test"
-="Test aborted"
-#return
+#if (startVoltage < defaultStartVoltage)
+    ="ERROR: Battery voltage too low (" + startVoltage + "V)"
+    ="The battery must be charged to at least " + defaultStartVoltage + "V before starting the test"
+    ="Test aborted"
+    #return
 #endif
 
 ="Starting test..."
@@ -47,14 +63,34 @@
 
 #while ((readVoltage(load) > minVoltage) && (elapsedTime < maxTestTimeSeconds))
     =var current = readCurrent(load)
-    if (current != null && current != undefined) {
-        =capacity = capacity + (current * (stepTime / 3600))
-    } else {
-        #debug "ERROR: Current read from device is null or undefined"
+    =var voltage = readVoltage(load)
+    =temperature = readTemperature(load)
+    
+    // Temperature safety checks
+    #if (temperature > maxTemp)
+        ="WARNING: Upper temperature limit reached: " + temperature + "°C"
         break
+    #endif
+    
+    #if (temperature < minTemp)
+        ="WARNING: Lower temperature limit reached: " + temperature + "°C"
+        break
+    #endif
+    
+    // Dynamic measurement interval
+    =var currentStepTime = (elapsedTime < initialPeriod) ? fastMeasureTime : normalStepTime
+    
+    if (current > 0) {
+        =internalResistance = (startVoltage - voltage) / current
     }
-    #delay stepTime
-    =elapsedTime = elapsedTime + stepTime
+    
+    if (current != null && current != undefined) {
+        =capacity = capacity + (current * (currentStepTime / 3600))
+        #log "Time,Voltage,Current,Temperature,Capacity" (elapsedTime/60) voltage current temperature capacity
+    }
+    
+    #delay currentStepTime
+    =elapsedTime = elapsedTime + currentStepTime
 #endwhile
 
 =reset(load)

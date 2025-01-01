@@ -1,0 +1,143 @@
+// 18650 Battery Advanced Test Script
+// Combines constant current discharge with dynamic load ramping
+
+// Basic test parameters
+=var load = getDevice("Load")
+=var defaultInitialCurrent = 1.0    // Initial constant current (1C)
+=var defaultRampStartCurrent = 1.0   // Start current for ramp
+=var defaultRampMaxCurrent = 2.0     // Maximum ramp current (1.5-2C)
+=var defaultRampDuration = 15        // Default 15 minutes
+=var defaultMinVoltage = 2.5
+=var defaultStartVoltage = 3.7      // Default minimum start voltage
+=var fastMeasureTime = 1            // 1 second measurement during ramp
+=var normalStepTime = 10            // 10 seconds for constant current
+=var defaultMaxTemp = 50            // Default maximum safe temperature
+=var defaultMinTemp = 15            // Default minimum safe temperature
+=var capacity = 0
+=var temperature = 0
+=var startTime = getCurrentTime()
+
+#popupInit "18650 Advanced Battery Test"
+#popupNumber "Initial Current (A)" defaultInitialCurrent 0.5 2.0 "Initial constant current (typically 1C)"
+#popupNumber "Ramp Start Current (A)" defaultRampStartCurrent 0.5 2.0 "Start current for ramp phase"
+#popupNumber "Ramp Maximum Current (A)" defaultRampMaxCurrent 1.0 4.0 0.1 "Maximum current during ramp (0.1A steps)"
+#popupNumber "Ramp Duration (min)" defaultRampDuration 5 30 "Duration of ramp test phase (Default: 15 min)"
+#popupNumber "Minimum Voltage (V)" defaultMinVoltage 2.5 3.0 "Safety cutoff voltage"
+#popupNumber "Start Voltage (V)" defaultStartVoltage 3.5 4.2 0.1 "Minimum required start voltage"
+#popupNumber "Maximum Temperature (°C)" defaultMaxTemp 45 60 "Upper temperature limit"
+#popupNumber "Minimum Temperature (°C)" defaultMinTemp 10 25 "Lower temperature limit"
+#popupButtons Start ok Abort
+#popupShow
+
+#if !ok
+="Test aborted"
+#return
+#endif
+
+// Initial voltage check
+=var startVoltage = readVoltage(load)
+#if (startVoltage < defaultStartVoltage)
+    ="ERROR: Battery voltage too low (" + startVoltage + "V)"
+    ="Battery should be charged above " + defaultStartVoltage + "V before testing"
+    #return
+#endif
+
+="Starting advanced test..."
+=setOn(load, 0)
+#delay 0.5
+=setVoltage(load, defaultMinVoltage)
+#delay 0.5
+
+// Enable logging and setup chart
+#log 1
+#logFile "18650_advanced_test.csv"
+#ChartCurves (load + ".Voltage") (load + ".Current") (load + ".Temperature")
+="Logging enabled, data will be saved to 18650_advanced_test.csv"
+
+// Phase 1: Initial constant current
+="Phase 1: Initial constant current discharge at " + defaultInitialCurrent + "A"
+=setCurrent(load, defaultInitialCurrent)
+=setOn(load, 1)
+
+#while (readVoltage(load) > defaultMinVoltage)
+    =var voltage = readVoltage(load)
+    =var current = readCurrent(load)
+    =temperature = readTemperature(load)
+    
+    // Safety checks
+    #if (temperature > defaultMaxTemp || temperature < defaultMinTemp)
+        ="WARNING: Temperature limit reached: " + temperature + "°C"
+        break
+    #endif
+    
+    if (current > 0) {
+        =capacity = capacity + (current * (normalStepTime / 3600))
+    }
+    
+    ="Time: " + formatSI((elapsedTime/60), 1) + " min, Current: " + current + "A, Voltage: " + voltage + "V"
+    #delay normalStepTime
+#endwhile
+
+// Phase 2: Ramp Test
+="Phase 2: Starting ramp test..."
+=var rampStepSize = (defaultRampMaxCurrent - defaultRampStartCurrent) / (defaultRampDuration * 60)
+=var rampTime = 0
+=var currentTestCurrent = defaultRampStartCurrent
+
+#while (rampTime < (defaultRampDuration * 60) && readVoltage(load) > defaultMinVoltage)
+    =setCurrent(load, currentTestCurrent)
+    =var voltage = readVoltage(load)
+    =var current = readCurrent(load)
+    =temperature = readTemperature(load)
+    
+    // Safety checks
+    #if (temperature > defaultMaxTemp || temperature < defaultMinTemp)
+        ="WARNING: Temperature limit reached: " + temperature + "°C"
+        break
+    #endif
+    
+    if (current > 0) {
+        =capacity = capacity + (current * (fastMeasureTime / 3600))
+    }
+    
+    ="Time: " + formatSI((elapsedTime/60), 1) + " min, Current: " + current + "A, Voltage: " + voltage + "V"
+    #delay fastMeasureTime
+    
+    =currentTestCurrent = defaultRampStartCurrent + (rampStepSize * rampTime)
+    =rampTime = rampTime + 1
+#endwhile
+
+// Phase 3: Final constant current
+="Phase 3: Final constant current discharge at " + defaultInitialCurrent + "A"
+=setCurrent(load, defaultInitialCurrent)
+
+#while (readVoltage(load) > defaultMinVoltage)
+    =var voltage = readVoltage(load)
+    =var current = readCurrent(load)
+    =temperature = readTemperature(load)
+    
+    // Safety checks
+    #if (temperature > defaultMaxTemp || temperature < defaultMinTemp)
+        ="WARNING: Temperature limit reached: " + temperature + "°C"
+        break
+    #endif
+    
+    if (current > 0) {
+        =capacity = capacity + (current * (normalStepTime / 3600))
+    }
+    
+    ="Time: " + formatSI((elapsedTime/60), 1) + " min, Current: " + current + "A, Voltage: " + voltage + "V"
+    #delay normalStepTime
+#endwhile
+
+// Test completion
+=reset(load)
+=setCurrent(load, 0)
+=setOn(load, 0)
+#log 0
+="Logging stopped"
+="Test completed"
+
+="Total capacity: " + formatSI((capacity * 1000), 1) + " mAh"
+="Final voltage: " + readVoltage(load) + "V"
+="Maximum temperature: " + temperature + "°C" 
