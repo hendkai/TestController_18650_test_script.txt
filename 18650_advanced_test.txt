@@ -53,13 +53,16 @@
 #logFile "18650_advanced_test.csv"
 #ChartCurves (load + ".Voltage") (load + ".Current") (load + ".Temperature")
 ="Logging enabled, data will be saved to 18650_advanced_test.csv"
+#delay 1  // Initial delay for logging setup
 
-// Phase 1: Initial constant current
-="Phase 1: Initial constant current discharge at " + defaultInitialCurrent + "A"
+// Phase 1: Konditionierung mit konstantem Strom (15 Minuten)
+="Phase 1: Conditioning at constant current " + defaultInitialCurrent + "A for 15 minutes"
 =setCurrent(load, defaultInitialCurrent)
 =setOn(load, 1)
+#delay 1  // Allow load to stabilize
 
-#while (readVoltage(load) > defaultMinVoltage)
+=var conditioningTime = 0
+#while (conditioningTime < (15 * 60) && readVoltage(load) > defaultMinVoltage)
     =var voltage = readVoltage(load)
     =var current = readCurrent(load)
     =temperature = readTemperature(load)
@@ -74,16 +77,18 @@
         =capacity = capacity + (current * (normalStepTime / 3600))
     }
     
-    ="Time: " + formatSI((elapsedTime/60), 1) + " min, Current: " + current + "A, Voltage: " + voltage + "V"
-    #delay normalStepTime
+    ="Phase 1 - Time: " + formatSI((conditioningTime/60), 1) + "/15 min, Current: " + current + "A, Voltage: " + voltage + "V"
+    #delay 1
+    =conditioningTime = conditioningTime + 1
 #endwhile
 
-// Phase 2: Ramp Test
-="Phase 2: Starting ramp test..."
+// Phase 2: Ramp Up und Halten
+="Phase 2a: Ramping up from " + defaultRampStartCurrent + "A to " + defaultRampMaxCurrent + "A"
 =var rampStepSize = (defaultRampMaxCurrent - defaultRampStartCurrent) / (defaultRampDuration * 60)
 =var rampTime = 0
 =var currentTestCurrent = defaultRampStartCurrent
 
+// Ramp Up
 #while (rampTime < (defaultRampDuration * 60) && readVoltage(load) > defaultMinVoltage)
     =setCurrent(load, currentTestCurrent)
     =var voltage = readVoltage(load)
@@ -100,15 +105,64 @@
         =capacity = capacity + (current * (fastMeasureTime / 3600))
     }
     
-    ="Time: " + formatSI((elapsedTime/60), 1) + " min, Current: " + current + "A, Voltage: " + voltage + "V"
-    #delay fastMeasureTime
-    
+    ="Phase 2a - Ramp Up Time: " + formatSI((rampTime/60), 1) + "/15 min, Current: " + current + "A, Voltage: " + voltage + "V"
+    #delay 1
     =currentTestCurrent = defaultRampStartCurrent + (rampStepSize * rampTime)
     =rampTime = rampTime + 1
 #endwhile
 
-// Phase 3: Final constant current
-="Phase 3: Final constant current discharge at " + defaultInitialCurrent + "A"
+// Halten bei Maximum für 15 Minuten
+="Phase 2b: Holding at maximum current " + defaultRampMaxCurrent + "A for 15 minutes"
+=var holdTime = 0
+#while (holdTime < (15 * 60) && readVoltage(load) > defaultMinVoltage)
+    =var voltage = readVoltage(load)
+    =var current = readCurrent(load)
+    =temperature = readTemperature(load)
+    
+    // Safety checks
+    #if (temperature > defaultMaxTemp || temperature < defaultMinTemp)
+        ="WARNING: Temperature limit reached: " + temperature + "°C"
+        break
+    #endif
+    
+    if (current > 0) {
+        =capacity = capacity + (current * (fastMeasureTime / 3600))
+    }
+    
+    ="Phase 2b - Hold Time: " + formatSI((holdTime/60), 1) + "/15 min, Current: " + current + "A, Voltage: " + voltage + "V"
+    #delay 1
+    =holdTime = holdTime + 1
+#endwhile
+
+// Phase 3: Ramp Down
+="Phase 3: Ramping down to " + defaultInitialCurrent + "A"
+=rampTime = 0
+=rampStepSize = (defaultRampMaxCurrent - defaultInitialCurrent) / (defaultRampDuration * 60)
+
+#while (rampTime < (defaultRampDuration * 60) && readVoltage(load) > defaultMinVoltage)
+    =currentTestCurrent = defaultRampMaxCurrent - (rampStepSize * rampTime)
+    =setCurrent(load, currentTestCurrent)
+    =var voltage = readVoltage(load)
+    =var current = readCurrent(load)
+    =temperature = readTemperature(load)
+    
+    // Safety checks
+    #if (temperature > defaultMaxTemp || temperature < defaultMinTemp)
+        ="WARNING: Temperature limit reached: " + temperature + "°C"
+        break
+    #endif
+    
+    if (current > 0) {
+        =capacity = capacity + (current * (fastMeasureTime / 3600))
+    }
+    
+    ="Phase 3 - Ramp Down Time: " + formatSI((rampTime/60), 1) + "/15 min, Current: " + current + "A, Voltage: " + voltage + "V"
+    #delay 1
+    =rampTime = rampTime + 1
+#endwhile
+
+// Phase 4: Ausklingen bei 1A
+="Phase 4: Final discharge at " + defaultInitialCurrent + "A"
 =setCurrent(load, defaultInitialCurrent)
 
 #while (readVoltage(load) > defaultMinVoltage)
@@ -127,7 +181,8 @@
     }
     
     ="Time: " + formatSI((elapsedTime/60), 1) + " min, Current: " + current + "A, Voltage: " + voltage + "V"
-    #delay normalStepTime
+    #delay 1  // Consistent 1-second logging interval
+    #delay (normalStepTime - 1)  // Remaining delay for the step
 #endwhile
 
 // Test completion
