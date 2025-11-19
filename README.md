@@ -3,7 +3,7 @@
 Professional battery testing scripts for 18650 lithium-ion cells using TestController and electronic loads (DL24, PX100, etc.).
 
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![TestController](https://img.shields.io/badge/Platform-TestController-green.svg)](https://lygte-info.dk/info/TestControllerIntro%20UK.html)
+[![TestController](https://img.shields.io/badge/Platform-TestController-green.svg)](https://lygte-info.dk/project/TestControllerIntro%20UK.html)
 
 📖 **[Complete Testing Guide](TESTING_GUIDE.md)** - Comprehensive guide for testing and qualifying 18650 cells for safe reuse
 🇩🇪 **[Deutsche Version](README_DE.md)** - German documentation
@@ -131,7 +131,7 @@ A multi-phase test simulating real-world dynamic load conditions:
 
 ### Requirements
 
-- **TestController** software ([Download](https://lygte-info.dk/info/TestControllerIntro%20UK.html))
+- **TestController** software ([Download](https://lygte-info.dk/project/TestControllerIntro%20UK.html))
 - **Electronic Load** compatible with TestController (DL24, PX100, etc.)
 - **18650 cells** fully charged to 4.2V
 - **Safety equipment** (LiPo bag, fire extinguisher, smoke detector)
@@ -314,7 +314,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Links
 
-- [TestController Official Site](https://lygte-info.dk/info/TestControllerIntro%20UK.html)
+- [TestController Official Site](https://lygte-info.dk/project/TestControllerIntro%20UK.html)
 - [Pukker's User Scripts Collection](https://lygte-info.dk/project/TestControllerUserScripts1%20UK.html)
 - [Battery University - 18650 Guide](https://batteryuniversity.com/)
 
