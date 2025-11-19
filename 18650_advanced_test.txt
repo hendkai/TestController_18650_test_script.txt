@@ -9,15 +9,21 @@
 =var defaultRampDuration = 15        // Default 15 minutes
 =var defaultMinVoltage = 2.5
 =var defaultStartVoltage = 3.7      // Default minimum start voltage
+=var defaultNominalCapacity = 3000  // Nominal capacity in mAh
 =var fastMeasureTime = 1            // 1 second measurement during ramp
 =var normalStepTime = 10            // 10 seconds for constant current
 =var defaultMaxTemp = 50            // Default maximum safe temperature
 =var defaultMinTemp = 15            // Default minimum safe temperature
+=var restPeriod = 30                // Rest period between phases (seconds)
 =var capacity = 0
+=var energy = 0
 =var temperature = 0
+=var internalResistance = 0
 =var startTime = getCurrentTime()
+=var maxVoltageDropRate = 0.2       // Higher limit for advanced test
 
 #popupInit "18650 Advanced Battery Test"
+#popupNumber "Nominal Capacity (mAh)" defaultNominalCapacity 1000 5000 "Battery nominal capacity for C-rate calculation"
 #popupNumber "Initial Current (A)" defaultInitialCurrent 0.5 2.0 "Initial constant current (typically 1C)"
 #popupNumber "Ramp Start Current (A)" defaultRampStartCurrent 0.5 2.0 "Start current for ramp phase"
 #popupNumber "Ramp Maximum Current (A)" defaultRampMaxCurrent 1.0 4.0 0.1 "Maximum current during ramp (0.1A steps)"
@@ -34,12 +40,72 @@
 #return
 #endif
 
+// Validate C-rates
+=var initialCRate = (defaultInitialCurrent * 1000) / defaultNominalCapacity
+=var maxCRate = (defaultRampMaxCurrent * 1000) / defaultNominalCapacity
+#if (maxCRate > 3.0)
+    ="ERROR: Maximum C-rate too high (" + formatSI(maxCRate, 2) + "C)"
+    ="Reduce maximum current or increase nominal capacity"
+    #return
+#elif (maxCRate > 2.0)
+    ="WARNING: High C-rate (" + formatSI(maxCRate, 2) + "C) may cause excessive heating"
+#endif
+
 // Initial voltage check
 =var startVoltage = readVoltage(load)
 #if (startVoltage < defaultStartVoltage)
     ="ERROR: Battery voltage too low (" + startVoltage + "V)"
     ="Battery should be charged above " + defaultStartVoltage + "V before testing"
     #return
+#endif
+
+// Initial internal resistance measurement (2-point method: 0.2C and 1C)
+="Measuring initial internal resistance (2-point method)..."
+
+// Calculate 0.2C and 1C currents based on nominal capacity
+=var lowCCurrent = defaultNominalCapacity / 5000  // 0.2C in Ampere
+=var highCCurrent = defaultNominalCapacity / 1000  // 1C in Ampere
+
+="Low current (0.2C): " + formatSI(lowCCurrent, 3) + " A"
+="High current (1C): " + formatSI(highCCurrent, 3) + " A"
+
+// Prepare load
+=setOn(load, 0)
+#delay 0.5
+=setVoltage(load, defaultMinVoltage)
+#delay 0.5
+
+// Step 1: 10 seconds at low current (0.2C)
+=setOn(load, 1)
+=setCurrent(load, lowCCurrent)
+="Measuring at 0.2C for 10 seconds..."
+#delay 10
+=var lowCCurrentVoltage = readVoltage(load)
+=var lowCCurrentActual = readCurrent(load)
+
+// Step 2: Ramp up and hold at high current (1C) for 1 second
+=setCurrent(load, highCCurrent * 0.7)
+#delay 0.3
+=setCurrent(load, highCCurrent)
+="Measuring at 1C for 1 second..."
+#delay 1
+=var highCCurrentVoltage = readVoltage(load)
+=var highCCurrentActual = readCurrent(load)
+
+// Turn off load
+=setOn(load, 0)
+#delay 1
+
+// Calculate internal resistance from 2-point measurement
+#if (highCCurrentActual > (0.9 * highCCurrent)) and (lowCCurrentActual > (0.9 * lowCCurrent))
+    =internalResistance = (lowCCurrentVoltage - highCCurrentVoltage) / (highCCurrentActual - lowCCurrentActual)
+    ="Initial internal resistance: " + formatSI(internalResistance * 1000, 1) + " mΩ"
+    ="  (measured at " + formatSI(lowCCurrentVoltage, 3) + "V / " + formatSI(lowCCurrentActual, 3) + "A and " + formatSI(highCCurrentVoltage, 3) + "V / " + formatSI(highCCurrentActual, 3) + "A)"
+#else
+    ="WARNING: Internal resistance measurement may be inaccurate"
+    ="  Low C current: " + formatSI(lowCCurrentActual, 3) + " A (expected: " + formatSI(lowCCurrent, 3) + " A)"
+    ="  High C current: " + formatSI(highCCurrentActual, 3) + " A (expected: " + formatSI(highCCurrent, 3) + " A)"
+    =internalResistance = 0
 #endif
 
 ="Starting advanced test..."
@@ -51,42 +117,65 @@
 // Enable logging and setup chart
 #log 1
 #logFile "18650_advanced_test.csv"
+#logStart "Time,Phase,Voltage,Current,Capacity,Energy,Power,Temperature,InternalResistance"
 #ChartCurves (load + ".Voltage") (load + ".Current") (load + ".Temperature")
 ="Logging enabled, data will be saved to 18650_advanced_test.csv"
 #delay 1  // Initial delay for logging setup
 
-// Phase 1: Konditionierung mit konstantem Strom (15 Minuten)
+// Phase 1: Conditioning with constant current (15 minutes)
 ="Phase 1: Conditioning at constant current " + defaultInitialCurrent + "A for 15 minutes"
 =setCurrent(load, defaultInitialCurrent)
 =setOn(load, 1)
 #delay 1  // Allow load to stabilize
 
 =var conditioningTime = 0
+=var lastVoltage = readVoltage(load)
 #while (conditioningTime < (15 * 60) && readVoltage(load) > defaultMinVoltage)
     =var voltage = readVoltage(load)
     =var current = readCurrent(load)
     =temperature = readTemperature(load)
     
-    // Safety checks
-    #if (temperature > defaultMaxTemp || temperature < defaultMinTemp)
-        ="WARNING: Temperature limit reached: " + temperature + "°C"
+    // Enhanced safety checks
+    #if (temperature > defaultMaxTemp)
+        ="CRITICAL: Temperature exceeded " + defaultMaxTemp + "°C - Test stopped"
+        break
+    #elif (temperature < defaultMinTemp)
+        ="CRITICAL: Temperature below " + defaultMinTemp + "°C - Test stopped"
         break
     #endif
     
+    // Calculate voltage drop rate
+    =var voltageDropRate = (lastVoltage - voltage) * 60  // V/min
+    #if (voltageDropRate > maxVoltageDropRate && conditioningTime > 60)
+        ="WARNING: Rapid voltage drop in Phase 1: " + formatSI(voltageDropRate, 3) + " V/min"
+    #endif
+    
+    // Calculate power and energy
+    =var power = voltage * current
     if (current > 0) {
-        =capacity = capacity + (current * (normalStepTime / 3600))
+        =capacity = capacity + (current * (1 / 3600))
+        =energy = energy + (power * (1 / 3600))
     }
     
-    ="Phase 1 - Time: " + formatSI((conditioningTime/60), 1) + "/15 min, Current: " + current + "A, Voltage: " + voltage + "V"
+    ="Phase 1 - Time: " + formatSI((conditioningTime/60), 1) + "/15 min, Current: " + formatSI(current, 3) + "A, Voltage: " + formatSI(voltage, 3) + "V, Temp: " + formatSI(temperature, 1) + "°C"
+    #logData (conditioningTime/60) "Phase1" voltage current capacity energy power temperature internalResistance
+    
     #delay 1
+    =lastVoltage = voltage
     =conditioningTime = conditioningTime + 1
 #endwhile
 
-// Phase 2: Ramp Up und Halten
+// Rest period between phases
+="Rest period between phases..."
+=setOn(load, 0)
+#delay restPeriod
+
+// Phase 2: Ramp Up and Hold
 ="Phase 2a: Ramping up from " + defaultRampStartCurrent + "A to " + defaultRampMaxCurrent + "A"
 =var rampStepSize = (defaultRampMaxCurrent - defaultRampStartCurrent) / (defaultRampDuration * 60)
 =var rampTime = 0
 =var currentTestCurrent = defaultRampStartCurrent
+=setOn(load, 1)
 
 // Ramp Up
 #while (rampTime < (defaultRampDuration * 60) && readVoltage(load) > defaultMinVoltage)
@@ -95,49 +184,93 @@
     =var current = readCurrent(load)
     =temperature = readTemperature(load)
     
-    // Safety checks
-    #if (temperature > defaultMaxTemp || temperature < defaultMinTemp)
-        ="WARNING: Temperature limit reached: " + temperature + "°C"
+    // Enhanced safety checks
+    #if (temperature > defaultMaxTemp)
+        ="CRITICAL: Temperature exceeded " + defaultMaxTemp + "°C - Test stopped"
+        break
+    #elif (temperature < defaultMinTemp)
+        ="CRITICAL: Temperature below " + defaultMinTemp + "°C - Test stopped"
         break
     #endif
     
+    // Calculate power and energy
+    =var power = voltage * current
     if (current > 0) {
         =capacity = capacity + (current * (fastMeasureTime / 3600))
+        =energy = energy + (power * (fastMeasureTime / 3600))
     }
     
-    ="Phase 2a - Ramp Up Time: " + formatSI((rampTime/60), 1) + "/15 min, Current: " + current + "A, Voltage: " + voltage + "V"
+    ="Phase 2a - Ramp Up Time: " + formatSI((rampTime/60), 1) + "/" + defaultRampDuration + " min, Current: " + formatSI(current, 3) + "A, Voltage: " + formatSI(voltage, 3) + "V, Temp: " + formatSI(temperature, 1) + "°C"
+    #logData (rampTime/60) "Phase2a" voltage current capacity energy power temperature internalResistance
+    
     #delay 1
     =currentTestCurrent = defaultRampStartCurrent + (rampStepSize * rampTime)
     =rampTime = rampTime + 1
 #endwhile
 
-// Halten bei Maximum für 15 Minuten
+// Rest period
+="Rest period..."
+=setOn(load, 0)
+#delay restPeriod
+
+// Hold at maximum for 15 minutes
 ="Phase 2b: Holding at maximum current " + defaultRampMaxCurrent + "A for 15 minutes"
+=setCurrent(load, defaultRampMaxCurrent)
+=setOn(load, 1)
 =var holdTime = 0
+
 #while (holdTime < (15 * 60) && readVoltage(load) > defaultMinVoltage)
     =var voltage = readVoltage(load)
     =var current = readCurrent(load)
     =temperature = readTemperature(load)
     
-    // Safety checks
-    #if (temperature > defaultMaxTemp || temperature < defaultMinTemp)
-        ="WARNING: Temperature limit reached: " + temperature + "°C"
+    // Enhanced safety checks
+    #if (temperature > defaultMaxTemp)
+        ="CRITICAL: Temperature exceeded " + defaultMaxTemp + "°C - Test stopped"
+        break
+    #elif (temperature < defaultMinTemp)
+        ="CRITICAL: Temperature below " + defaultMinTemp + "°C - Test stopped"
         break
     #endif
     
+    // Calculate power and energy
+    =var power = voltage * current
     if (current > 0) {
         =capacity = capacity + (current * (fastMeasureTime / 3600))
+        =energy = energy + (power * (fastMeasureTime / 3600))
     }
     
-    ="Phase 2b - Hold Time: " + formatSI((holdTime/60), 1) + "/15 min, Current: " + current + "A, Voltage: " + voltage + "V"
+    // Periodic internal resistance measurement during high load
+    #if ((holdTime % 300) == 0 && holdTime > 0)
+        =setOn(load, 0)
+        #delay 0.1
+        =var restVoltage = readVoltage(load)
+        =setOn(load, 1)
+        #delay 0.1
+        =var loadVoltage = readVoltage(load)
+        =var measureCurrent = readCurrent(load)
+        #if (measureCurrent > 0.1)
+            =internalResistance = (restVoltage - loadVoltage) / measureCurrent
+        #endif
+    #endif
+    
+    ="Phase 2b - Hold Time: " + formatSI((holdTime/60), 1) + "/15 min, Current: " + formatSI(current, 3) + "A, Voltage: " + formatSI(voltage, 3) + "V, Temp: " + formatSI(temperature, 1) + "°C"
+    #logData (holdTime/60) "Phase2b" voltage current capacity energy power temperature internalResistance
+    
     #delay 1
     =holdTime = holdTime + 1
 #endwhile
+
+// Rest period
+="Rest period..."
+=setOn(load, 0)
+#delay restPeriod
 
 // Phase 3: Ramp Down
 ="Phase 3: Ramping down to " + defaultInitialCurrent + "A"
 =rampTime = 0
 =rampStepSize = (defaultRampMaxCurrent - defaultInitialCurrent) / (defaultRampDuration * 60)
+=setOn(load, 1)
 
 #while (rampTime < (defaultRampDuration * 60) && readVoltage(load) > defaultMinVoltage)
     =currentTestCurrent = defaultRampMaxCurrent - (rampStepSize * rampTime)
@@ -145,44 +278,67 @@
     =var voltage = readVoltage(load)
     =var current = readCurrent(load)
     =temperature = readTemperature(load)
-    
-    // Safety checks
-    #if (temperature > defaultMaxTemp || temperature < defaultMinTemp)
-        ="WARNING: Temperature limit reached: " + temperature + "°C"
+
+    // Enhanced safety checks
+    #if (temperature > defaultMaxTemp)
+        ="CRITICAL: Temperature exceeded " + defaultMaxTemp + "°C - Test stopped"
+        break
+    #elif (temperature < defaultMinTemp)
+        ="CRITICAL: Temperature below " + defaultMinTemp + "°C - Test stopped"
         break
     #endif
-    
+
+    // Calculate power and energy
+    =var power = voltage * current
     if (current > 0) {
         =capacity = capacity + (current * (fastMeasureTime / 3600))
+        =energy = energy + (power * (fastMeasureTime / 3600))
     }
-    
-    ="Phase 3 - Ramp Down Time: " + formatSI((rampTime/60), 1) + "/15 min, Current: " + current + "A, Voltage: " + voltage + "V"
+
+    ="Phase 3 - Ramp Down Time: " + formatSI((rampTime/60), 1) + "/" + defaultRampDuration + " min, Current: " + formatSI(current, 3) + "A, Voltage: " + formatSI(voltage, 3) + "V, Temp: " + formatSI(temperature, 1) + "°C"
+    #logData (rampTime/60) "Phase3" voltage current capacity energy power temperature internalResistance
+
     #delay 1
     =rampTime = rampTime + 1
 #endwhile
 
-// Phase 4: Ausklingen bei 1A
+// Rest period
+="Rest period..."
+=setOn(load, 0)
+#delay restPeriod
+
+// Phase 4: Final discharge at constant current
 ="Phase 4: Final discharge at " + defaultInitialCurrent + "A"
 =setCurrent(load, defaultInitialCurrent)
+=setOn(load, 1)
+=var finalTime = 0
 
 #while (readVoltage(load) > defaultMinVoltage)
     =var voltage = readVoltage(load)
     =var current = readCurrent(load)
     =temperature = readTemperature(load)
-    
-    // Safety checks
-    #if (temperature > defaultMaxTemp || temperature < defaultMinTemp)
-        ="WARNING: Temperature limit reached: " + temperature + "°C"
+
+    // Enhanced safety checks
+    #if (temperature > defaultMaxTemp)
+        ="CRITICAL: Temperature exceeded " + defaultMaxTemp + "°C - Test stopped"
+        break
+    #elif (temperature < defaultMinTemp)
+        ="CRITICAL: Temperature below " + defaultMinTemp + "°C - Test stopped"
         break
     #endif
-    
+
+    // Calculate power and energy
+    =var power = voltage * current
     if (current > 0) {
-        =capacity = capacity + (current * (normalStepTime / 3600))
+        =capacity = capacity + (current * (fastMeasureTime / 3600))
+        =energy = energy + (power * (fastMeasureTime / 3600))
     }
-    
-    ="Time: " + formatSI((elapsedTime/60), 1) + " min, Current: " + current + "A, Voltage: " + voltage + "V"
-    #delay 1  // Consistent 1-second logging interval
-    #delay (normalStepTime - 1)  // Remaining delay for the step
+
+    ="Phase 4 - Final Time: " + formatSI((finalTime/60), 1) + " min, Current: " + formatSI(current, 3) + "A, Voltage: " + formatSI(voltage, 3) + "V, Temp: " + formatSI(temperature, 1) + "°C"
+    #logData (finalTime/60) "Phase4" voltage current capacity energy power temperature internalResistance
+
+    #delay 1
+    =finalTime = finalTime + 1
 #endwhile
 
 // Test completion
@@ -193,6 +349,32 @@
 ="Logging stopped"
 ="Test completed"
 
+="=== ADVANCED TEST RESULTS ==="
 ="Total capacity: " + formatSI((capacity * 1000), 1) + " mAh"
+="Total energy: " + formatSI(energy, 2) + " Wh"
+="Average voltage: " + formatSI((energy / capacity), 3) + " V"
+="Capacity ratio: " + formatSI((capacity * 1000 / defaultNominalCapacity * 100), 1) + "% of nominal"
 ="Final voltage: " + readVoltage(load) + "V"
-="Maximum temperature: " + temperature + "°C" 
+="Maximum temperature: " + temperature + "°C"
+="Final internal resistance: " + formatSI(internalResistance * 1000, 1) + " mΩ"
+
+// Battery performance assessment
+=var healthPercent = (capacity * 1000 / defaultNominalCapacity * 100)
+=var maxCRateAchieved = (defaultRampMaxCurrent * 1000) / defaultNominalCapacity
+="Maximum C-rate tested: " + formatSI(maxCRateAchieved, 2) + "C"
+
+#if (healthPercent > 80)
+    ="Battery Health: EXCELLENT (" + formatSI(healthPercent, 1) + "%) - Suitable for high-drain applications"
+#elif (healthPercent > 60)
+    ="Battery Health: GOOD (" + formatSI(healthPercent, 1) + "%) - Suitable for moderate-drain applications"
+#elif (healthPercent > 40)
+    ="Battery Health: FAIR (" + formatSI(healthPercent, 1) + "%) - Suitable for low-drain applications only"
+#else
+    ="Battery Health: POOR (" + formatSI(healthPercent, 1) + "%) - Consider replacement"
+#endif
+
+#if (internalResistance > 0.1)
+    ="High internal resistance detected - May indicate aging or damage"
+#elif (internalResistance > 0.05)
+    ="Moderate internal resistance - Monitor for degradation"
+#endif 

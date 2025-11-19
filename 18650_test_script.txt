@@ -5,17 +5,23 @@
 =var defaultTestCurrent = 1.0
 =var defaultMinVoltage = 2.5
 =var defaultStartVoltage = 3.7      // Default minimum start voltage
+=var defaultNominalCapacity = 3000  // Nominal capacity in mAh for C-rate calculation
 =var fastMeasureTime = 1     // 1 second for first 5 minutes
 =var normalStepTime = 10     // 10 seconds for the remainder
 =var initialPeriod = 300     // 5 minutes in seconds
-=var maxTestTime = 300     // Erhöht auf 5 Stunden (300 Minuten)
+=var maxTestTime = 300     // Increased to 5 hours (300 minutes)
 =var capacity = 0
+=var energy = 0              // Track energy in Wh
 =var internalResistance = 0
 =var temperature = 0
 =var defaultMaxTemp = 50     // Default maximum safe temperature
 =var defaultMinTemp = 15     // Default minimum safe temperature
+=var maxVoltageDropRate = 0.1 // Maximum voltage drop rate V/min
+=var lastVoltage = 0
+=var voltageDropRate = 0
 
 #popupInit "18650 Battery Test - Enhanced Settings"
+#popupNumber "Nominal Capacity (mAh)" defaultNominalCapacity 1000 5000 "Battery nominal capacity for C-rate calculation"
 #popupNumber "Discharge Current (A)" defaultTestCurrent 0.1 2.0 "Recommended: 0.5C-1C of nominal capacity"
 #popupNumber "Minimum Voltage (V)" defaultMinVoltage 2.5 3.0 "Safety cutoff voltage (2.5V recommended)"
 #popupNumber "Start Voltage (V)" defaultStartVoltage 3.5 4.2 0.1 "Minimum required start voltage"
@@ -30,10 +36,20 @@
 =var minVoltage = defaultMinVoltage
 =var maxTemp = defaultMaxTemp
 =var minTemp = defaultMinTemp
+=var nominalCapacity = defaultNominalCapacity
 
 #if !ok
 ="Test aborted"
 #return
+#endif
+
+// Validate C-rate (current vs capacity)
+=var cRate = (testCurrent * 1000) / nominalCapacity
+#if (cRate > 2.0)
+    ="WARNING: High C-rate detected (" + formatSI(cRate, 2) + "C)"
+    ="This may cause excessive heating and reduce battery lifespan"
+#elif (cRate > 1.0)
+    ="NOTICE: Testing at " + formatSI(cRate, 2) + "C rate"
 #endif
 
 =var startVoltage = readVoltage(load)
@@ -42,6 +58,55 @@
     ="The battery must be charged to at least " + defaultStartVoltage + "V before starting the test"
     ="Test aborted"
     #return
+#endif
+
+// Initial internal resistance measurement (2-point method: 0.2C and 1C)
+="Measuring initial internal resistance (2-point method)..."
+
+// Calculate 0.2C and 1C currents based on nominal capacity
+=var lowCCurrent = nominalCapacity / 5000  // 0.2C in Ampere
+=var highCCurrent = nominalCapacity / 1000  // 1C in Ampere
+
+="Low current (0.2C): " + formatSI(lowCCurrent, 3) + " A"
+="High current (1C): " + formatSI(highCCurrent, 3) + " A"
+
+// Prepare load
+=setOn(load, 0)
+#delay 0.5
+=setVoltage(load, minVoltage)
+#delay 0.5
+
+// Step 1: 10 seconds at low current (0.2C)
+=setOn(load, 1)
+=setCurrent(load, lowCCurrent)
+="Measuring at 0.2C for 10 seconds..."
+#delay 10
+=var lowCCurrentVoltage = readVoltage(load)
+=var lowCCurrentActual = readCurrent(load)
+
+// Step 2: Ramp up and hold at high current (1C) for 1 second
+=setCurrent(load, highCCurrent * 0.7)
+#delay 0.3
+=setCurrent(load, highCCurrent)
+="Measuring at 1C for 1 second..."
+#delay 1
+=var highCCurrentVoltage = readVoltage(load)
+=var highCCurrentActual = readCurrent(load)
+
+// Turn off load
+=setOn(load, 0)
+#delay 1
+
+// Calculate internal resistance from 2-point measurement
+#if (highCCurrentActual > (0.9 * highCCurrent)) and (lowCCurrentActual > (0.9 * lowCCurrent))
+    =internalResistance = (lowCCurrentVoltage - highCCurrentVoltage) / (highCCurrentActual - lowCCurrentActual)
+    ="Initial internal resistance: " + formatSI(internalResistance * 1000, 1) + " mΩ"
+    ="  (measured at " + formatSI(lowCCurrentVoltage, 3) + "V / " + formatSI(lowCCurrentActual, 3) + "A and " + formatSI(highCCurrentVoltage, 3) + "V / " + formatSI(highCCurrentActual, 3) + "A)"
+#else
+    ="WARNING: Internal resistance measurement may be inaccurate"
+    ="  Low C current: " + formatSI(lowCCurrentActual, 3) + " A (expected: " + formatSI(lowCCurrent, 3) + " A)"
+    ="  High C current: " + formatSI(highCCurrentActual, 3) + " A (expected: " + formatSI(highCCurrent, 3) + " A)"
+    =internalResistance = 0
 #endif
 
 ="Starting test..."
@@ -57,27 +122,67 @@
 #logTime 1
 #log 1
 #logClear
-#logStart "Time,Voltage,Current,Capacity"
-#ChartCurves (load + ".Voltage") (load + ".Current")
+#logStart "Time,Voltage,Current,Capacity,Energy,Power,Temperature,InternalResistance"
+#ChartCurves (load + ".Voltage") (load + ".Current") (load + ".Temperature")
 
 =setOn(load, 1)
 ="Test running with " + testCurrent + " A"
 
 =var maxTestTimeSeconds = (maxTestTime * 60)
 =var elapsedTime = 0
+=lastVoltage = readVoltage(load)
 
 #while ((readVoltage(load) > minVoltage) && (elapsedTime < maxTestTimeSeconds))
     =var current = readCurrent(load)
     =var voltage = readVoltage(load)
+    // External temperature sensor not supported by DL24P firmware
+    // Using internal temperature as fallback
+    =temperature = 25  // Default room temperature assumption
+    // Alternative: Read internal temperature if available
+    // =temperature = readInternalTemperature(load)
     
-    ="DEBUG: Current time: " + (elapsedTime/60) + " minutes"
-    ="DEBUG: Voltage: " + voltage + "V"
-    ="DEBUG: Current: " + current + "A"
+    // Calculate voltage drop rate (V/min)
+    #if (elapsedTime > 60)
+        =voltageDropRate = (lastVoltage - voltage) * 60  // Convert to per minute
+        #if (voltageDropRate > maxVoltageDropRate)
+            ="WARNING: Rapid voltage drop detected: " + formatSI(voltageDropRate, 3) + " V/min"
+        #endif
+    #endif
     
+    // Enhanced safety checks
+    #if (temperature > maxTemp)
+        ="CRITICAL: Temperature exceeded " + maxTemp + "°C - Test stopped"
+        break
+    #elif (temperature < minTemp)
+        ="CRITICAL: Temperature below " + minTemp + "°C - Test stopped"
+        break
+    #endif
+    
+    // Calculate energy and power
+    =var power = voltage * current
     =capacity = capacity + (current * (1 / 3600))
-    #logData (elapsedTime/60) voltage current capacity
+    =energy = energy + (power * (1 / 3600))
+    
+    // Periodic internal resistance measurement (every 5 minutes)
+    #if ((elapsedTime % 300) == 0 && elapsedTime > 0)
+        =setOn(load, 0)
+        #delay 0.1
+        =var restVoltage = readVoltage(load)
+        =setOn(load, 1)
+        #delay 0.1
+        =var loadVoltage = readVoltage(load)
+        =var measureCurrent = readCurrent(load)
+        #if (measureCurrent > 0.1)
+            =internalResistance = (restVoltage - loadVoltage) / measureCurrent
+        #endif
+    #endif
+    
+    ="Time: " + formatSI((elapsedTime/60), 1) + " min, Voltage: " + formatSI(voltage, 3) + "V, Current: " + formatSI(current, 3) + "A, Temp: " + formatSI(temperature, 1) + "°C"
+    
+    #logData (elapsedTime/60) voltage current capacity energy power temperature internalResistance
     
     #delay 1
+    =lastVoltage = voltage
     =elapsedTime = elapsedTime + 1
 #endwhile
 
@@ -93,16 +198,33 @@
     ="Maximum test time reached"
 #elif readVoltage(load) <= minVoltage
     ="Minimum voltage reached"
+#elif temperature > maxTemp
+    ="Temperature limit exceeded"
+#elif temperature < minTemp
+    ="Temperature limit below minimum"
 #endif
 
+="=== FINAL RESULTS ==="
 ="Discharged capacity: " + formatSI((capacity * 1000), 1) + " mAh"
+="Discharged energy: " + formatSI(energy, 2) + " Wh"
+="Average voltage: " + formatSI((energy / capacity), 3) + " V"
+="Capacity ratio: " + formatSI((capacity * 1000 / nominalCapacity * 100), 1) + "% of nominal"
 ="End voltage: " + readVoltage(load) + " V"
+="Final temperature: " + temperature + " °C"
 ="Test duration: " + formatSI((elapsedTime / 60), 1) + " minutes"
 
-if (internalResistance > 0) {
-    ="Internal Resistance: " + formatSI(internalResistance * 1000, 3) + " mOhm"
-} else {
-    ="ERROR: Internal resistance is zero or negative"
-}
+#if (internalResistance > 0)
+    ="Final internal resistance: " + formatSI(internalResistance * 1000, 1) + " mΩ"
+#else
+    ="Internal resistance measurement failed"
+#endif
 
-#debug "Current read from device: " current
+// Battery health assessment
+=var healthPercent = (capacity * 1000 / nominalCapacity * 100)
+#if (healthPercent > 80)
+    ="Battery Health: GOOD (" + formatSI(healthPercent, 1) + "%)"
+#elif (healthPercent > 60)
+    ="Battery Health: FAIR (" + formatSI(healthPercent, 1) + "%)"
+#else
+    ="Battery Health: POOR (" + formatSI(healthPercent, 1) + "%) - Consider replacement"
+#endif

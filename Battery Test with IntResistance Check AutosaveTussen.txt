@@ -1,0 +1,294 @@
+#scriptMenu Battery Discharge with Internal Resistance Check
+#scriptInterface Load setCurrent setOn readVoltage setVoltage readCurrent readCapacity readTemperature
+#logcmds 0
+="Battery Discharge with Internal Resistance Check"
+=var load=getDevice("Load")
+="Loaddevice = " + load
+=var endVoltage=3.0
+=var testCurrent=1.5
+=var endVoltageLoad = (endVoltage*0.98)
+=var stepTime=1
+=var Voltage
+=var stopVoltage
+=var startCurrent
+=var stopCurrent
+=var stoppedBy="Test Controller"
+=var addPower=1;
+=var addCapacity=1;
+=var addEnergy=1;
+=var addResistance=1;
+=var maxTemp=70
+=var maxTempSave=50
+=var reset=1
+=var Timelimit=0
+=var Stoptime=0
+=var Timecheck=0
+=var Overheatcheck=1
+=var MaxPowerLoad=90
+=var RatedCapacity=4500
+=var Autosave=0
+=var endTemp=0
+=var StartTime=0
+=var EindTime=0
+=var Title="Battery Discharge Test"
+=var specifiedVoltage=3.7
+=var IntResistance=1
+=var lowCCurrent
+=var lowCCurrentVoltage
+=var highCCurrent
+=var highCCurrentVoltage
+=var startVoltage 
+
+=setCurrent(load,0)
+#delay 0.5
+=setOn(load,0)
+
+#popupInit "Battery Discharge with Internal Resistance Check"
+#popupNumber "Nominal Voltage (V)" specifiedVoltage 0.5 60 "Battery Voltage"
+#popupNumber "Minimum Voltage (V)" endVoltage 0.5 60 "Battery Voltage when complete discharged 0.5-60"
+#popupNumber "Discharge Current (A)" testCurrent 0.02 5 "Current used for discharge 0.02-5"
+#popupNumber "Rated Battery Capacity (mAh) " RatedCapacity 100 10000 "The specified Capacity for the battery"
+#popupCheckbox "Check Internal Resistance" IntResistance "Activate Internal Resistance Measurement"
+#popupNumber "Logging interval (sec.)" stepTime 0 60 "Logging interval in Seconds"
+#popupCheckbox "Time limited Discharge" Timecheck "Activate Time limit"
+#popupNumber "Max. Discharge time (min.)" Stoptime 0 1440 "Max. Discharge time in Minutes 0-1440"
+#popupCheckbox "Check Max. Temperature load" Overheatcheck "Stop when Max. internal Temperature load reached"
+#popupNumber "Max. Temperature Loaddevice (C)" maxTempSave 20 80 "Max. internal Temperature load 40-80"
+#popupNumber "Max. Power Loaddevice (W)" MaxPowerLoad 0 100 "Maximum Power dissipation by load 0-100"
+#popupCheckbox "Add calculated Power (W)" addPower "Add Math.Power expression"
+#popupCheckbox "Add calculated Capacity (Ah)" addCapacity "Add Math.Capacity expression"
+#popupCheckbox "Add calculated Energy (Wh)" addEnergy "Add Math.Energy expression"
+#popupCheckbox "Add calculated LoadResistance (ohm)" addResistance "Add calculation Load Resistance"
+#popupCheckbox "Reset Load before start" reset "Reset Load before start"
+#popupCheckbox "Autosave Chart, CSV and Log" Autosave "Check for autosaving Chart, CSV and Log file"
+#popupText "Battery Name" Title 25
+#popupButtons Start ok Abort
+#popupShow
+
+#if !ok
+=" "
+="Test aborted by user"
+#return
+#endif
+
+#math
+#if addPower
+#math Power "W" Formula 0 ((nameCurrent(load))+"*"+(nameVoltage(load)))
+#endif
+#if addCapacity
+#math Capacity "Ah" SumTimeHour 0 (nameCurrent(load))
+#endif
+#if addEnergy
+#math Energy "Wh" SumTimeHour 0 ((nameCurrent(load))+"*"+(nameVoltage(load)))
+#endif
+#if addResistance
+#math LoadResistance "ohm" Formula 0 ((nameVoltage(load))+"/"+(nameCurrent(load)))
+#endif
+
+=" "
+="Battery under Test = " + Title
+="Specifications: Nominal Voltage = "+specifiedVoltage+" V and Rated Capacity = "+int(RatedCapacity)+ " mAh"
+=startVoltage=readVoltage(load)
+#if readVoltage(load)<endVoltage then
+=" "
+="***Check Settings***"
+="Test aborted, starting Voltage is to low"
+#return
+#endif
+
+#if (readVoltage(load)*testCurrent)>MaxPowerLoad then
+=testCurrent=(MaxPowerLoad/readVoltage(load))
+=" "
+="*** Max. Dischargecurrent is set to "+(formatSI(testCurrent,4))+" A, (Max power for load) "+MaxPowerLoad+" Watt ***"
+#endif
+
+;0.2C Current for Int. Resistance Check
+=lowCCurrent=RatedCapacity/5000
+;1C Current for Int. Resistance Check
+=highCCurrent=RatedCapacity/1000
+
+#if IntResistance and (readVoltage(load)*highCCurrent)>MaxPowerLoad then
+=highCCurrent=(MaxPowerLoad/readVoltage(load))
+="*** High Current for resistance check is set to "+(formatSI(highCCurrent,4))+" A, (Max power for load) "+MaxPowerLoad+" Watt ***"
+#endif
+
+#if Overheatcheck
+=maxTemp = maxTempSave
+#endif
+
+#if reset
+(load):reset
+#endif
+
+=setCurrent(load,0)
+#delay 0.5
+=setOn(load,1)
+#delay 3
+
+=endVoltageLoad=(endVoltage*0.90)
+=setVoltage(load,endVoltageLoad)
+#delay 0.5
+
+=" "
+="Start Voltage = "+startVoltage+" Volt"
+="Discharge Current = "+testCurrent+" Ampere"
+="Minimum Voltage = "+endVoltage+" Volt"
+="Rated Battery Capacity = "+RatedCapacity+" mAh"
+
+#if Overheatcheck then
+="Temperature limit Load is set to: "+maxTemp+" C"
+#endif
+
+#if Timecheck
+="Max. Discharge time = " + Stoptime + " Minutes"
+=Timelimit=(Stoptime*60)
+#endif
+
+#if IntResistance then
+=" "
+="Internal Resistance Check in Progress"
+#log (0.2)
+#ChartCurves (load+".Voltage") (load+".Current") (load+".Capacity") Math.Power
+#chartColors red blue green black
+#chartScaleName (load+".Voltage") (Title+" Voltage (Volt)")
+#chartScaleName (load+".Current") (Title+" Current (Ampere)")
+#chartScaleName (load+".Capacity") (Title+" Discharged Capacity (mAh)")
+#chartScaleName Math.Power (Title+" Power (Watt)")
+#chartX hhmmss
+=setCurrent(load,lowCCurrent)
+="10 Seconds Low Current (0.2*C) Discharge ("+formatSI(lowCCurrent,4)+" A)"
+#delay 10
+#HasLogged
+=lowCCurrentVoltage=readVoltage(load)
+=setCurrent(load,highCCurrent*0.7)
+#delay 0.3
+=setCurrent(load,highCCurrent)
+="1 Second High Current (1.0*C) Discharge ("+formatSI(highCCurrent,4)+" A)"
+#delay 0.7
+#HasLogged
+=highCCurrentVoltage=readVoltage(load)
+#else
+#log (stepTime)
+#ChartCurves (load+".Voltage") (load+".Current") (load+".Capacity") Math.Power
+#chartColors red blue green black
+#chartScaleName (load+".Voltage") (Title+" Voltage (Volt)")
+#chartScaleName (load+".Current") (Title+" Current (Ampere)")
+#chartScaleName (load+".Capacity") (Title+" Discharged Capacity (mAh)")
+#chartScaleName Math.Power (Title+" Power (Watt)")
+#chartX hhmmss
+#endif
+	
+#if (readCurrent(load)>(0.9*highCCurrent)) and IntResistance then
+="Internal Resistance = "+formatSI((lowCCurrentVoltage-highCCurrentVoltage)/(highCCurrent-lowCCurrent),3)+ "ohm"	
+#endif
+
+#if (readCurrent(load)<(0.9*highCCurrent)) and IntResistance  then
+="***Check setup and parameters***"
+="Internal Resistance Check failed, test aborted"
+#log (0)
+#return
+#endif
+
+=setCurrent(load,testCurrent)
+=" "
+#delay 0.5
+=setCurrent(load,testCurrent)
+#delay 0.5
+#log (stepTime)
+=" "
+="Discharge Test is Running"
+=timestamp()+" Discharge started with "+testCurrent+" A to "+endVoltage+" V";
+;="Temperature limit Load is set to: "+maxTemp+" C"
+
+=StartTime=timestamp()
+=setOn(load,1);
+#delay 0.5
+#HasLogged
+
+#if testCurrent<0.05
+#delay 5
+#else
+#endif
+
+#if (readVoltage(load)<endVoltage) then
+="***Check Settings***"
+="Discharge not started, Input Voltage to low"
+=stoppedBy="TestController"
+#log (0)
+#return
+#else
+#endif
+
+#if Timecheck then
+#wait (readVoltage(load)>endVoltage) and (readCurrent(load)>(0.1*testCurrent)) and time<Timelimit and (readTemperature(load)<(maxTemp))
+#else
+#wait (readVoltage(load)>endVoltage) and (readCurrent(load)>(0.1*testCurrent)) and (readTemperature(load)<(maxTemp))
+#endif
+=stopVoltage=readVoltage(load)
+#HasLogged
+
+=endTemp=readTemperature(load)
+=stopCurrent=readCurrent(load)
+=timestamp()+" Discharge stopped at "+stopVoltage+" V";
+=EindTime=timestamp()
+
+#if (readVoltage(load)<endVoltage)
+=stoppedBy="TestController (Minimum voltage detected)"
+#endif
+
+#if (readCurrent(load)<(0.1*testCurrent)) and (readVoltage(load)>endVoltage) then
+=stoppedBy="Load (low Discharge Current detected by Load)"
+#endif
+
+#if endTemp>(maxTemp-0.5))
+=stoppedBy="Test aborted by TestController, Load Temperature over Maximum Temperature Load ***Check Settings***"
+#endif
+
+#if time>Timelimit and Timecheck
+=stoppedBy="TestController (Maximum Discharge time reached)"
+#endif
+
+=" "
+=setOn(load,0)
+#delay 15
+#log (0)
+
+#if Autosave then
+="Discharge stopped by "+stoppedBy
+="End Voltage = "+stopVoltage+" Volt";
+="Discharged with Current = "+testCurrent+" Ampere"
+="Capacity = "+readCapacity(load)+" mAh"
+="Energy = "+readEnergy(load)+" Wh"
+#Charttitle (Title)
+=" "
+="Chart, Log and CSV files are saved as: "+Title+".png, "+ Title+".log and "+Title+".csv"
+;#Savetable (Title)
+#scriptMenu Test
+#ExportInit
+#ExportColumns
+#ExportColumn index "" Full
+#ExportColumn time "" Full
+#ExportColumn minutes "" Full
+#ExportColumn dateTime "" Full
+#ExportColumn ATDL24P.Voltage "" Full
+#ExportColumn ATDL24P.Current "" Full
+#ExportColumn ATDL24P.Capacity "" Full
+#ExportColumn ATDL24P.Energy "" Full
+#ExportColumn ATDL24P.Temperature "" Full
+#ExportColumn ATDL24P.Time "" Full
+#ExportColumn Math.Power "" Full
+#ExportColumn Math.Capacity "" Full
+#ExportColumn Math.Energy "" Full
+#ExportColumn Math.LoadResistance "" Full
+#ExportReduce AllData
+#ExportTable (Title)
+#Savechart (Title) 2000 1000
+#Savelog (Title) log
+#else
+="Discharge stopped by "+stoppedBy
+="End Voltage = "+stopVoltage+" Volt"
+="Discharged with Current = "+testCurrent+" Ampere"
+="Capacity = "+readCapacity(load)+" mAh"
+="Energy = "+readEnergy(load)+ " Wh"
+#return
+#endif
